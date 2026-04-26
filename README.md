@@ -1,6 +1,6 @@
-# Cancer Cells Detector
+# Mice Cancer Cells Detector
 
-**A Python-based image analysis tool for cancer cell detection and region scoring in histopathology images.**
+**A Python-based image analysis tool for cancer cell detection in Mice and region scoring in histopathology images.**
 
 This project locates cancer cells in medical images, highlights them for easy visualization, and provides quantitative scores based on the density of pigmented cells, white spaces, muscle tissues, and other tissue components.
 
