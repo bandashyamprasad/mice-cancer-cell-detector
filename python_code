@@ -1,0 +1,163 @@
+import os
+import numpy as np
+import cv2
+from PIL import Image, ImageDraw
+
+INPUT_ROOT = "input_images"
+OUTPUT_ROOT = "processed_images"
+
+ROI_FRACTION = 0.28
+INSET_FRACTION = 0.255
+
+ROI_DASH = 10
+ROI_WIDTH = 3
+PAD = 40
+
+
+def compute_score(patch):
+
+    hsv = cv2.cvtColor(patch, cv2.COLOR_RGB2HSV)
+    hue, sat, val = hsv[:,:,0], hsv[:,:,1], hsv[:,:,2]
+
+    brown = (
+        (hue > 5) &
+        (hue < 35) &
+        (sat > 80) &
+        (val < 200)
+    )
+
+    brown_density = brown.mean()
+
+    brown_uint8 = (brown.astype(np.uint8))*255
+    num_labels,_ = cv2.connectedComponents(brown_uint8)
+
+    cluster_score = num_labels
+
+    gray = cv2.cvtColor(patch, cv2.COLOR_RGB2GRAY)
+    texture = cv2.Laplacian(gray, cv2.CV_64F).var()
+
+    white = (gray > 240).mean()
+
+    score = (
+        brown_density*6
+        + cluster_score*2
+        + texture*0.01
+        - white*6
+    )
+
+    return score
+
+
+def rectangles_overlap(a,b):
+    ax1,ay1,ax2,ay2 = a
+    bx1,by1,bx2,by2 = b
+
+    return not (ax2 <= bx1 or ax1 >= bx2 or ay2 <= by1 or ay1 >= by2)
+
+
+def process_image(path,out_path):
+
+    try:
+
+        img = Image.open(path).convert("RGB")
+        arr = np.array(img)
+
+        H,W = arr.shape[:2]
+
+        roi_size = int(min(W,H)*ROI_FRACTION)
+
+        inset_width = int(W*INSET_FRACTION)
+        inset_height = inset_width
+
+        inset_x1 = W - inset_width - PAD
+        inset_y1 = H - inset_height - PAD
+        inset_x2 = inset_x1 + inset_width
+        inset_y2 = inset_y1 + inset_height
+
+        inset_rect = (inset_x1,inset_y1,inset_x2,inset_y2)
+
+        best_score = -999
+        best_pos = None
+
+        y_start = int(H*0.2)
+        y_end = int(H*0.8)
+
+        x_start = int(W*0.2)
+        x_end = int(W*0.8)
+
+        step = roi_size//4
+
+        for y in range(y_start,y_end-roi_size,step):
+            for x in range(x_start,x_end-roi_size,step):
+
+                roi_rect = (x,y,x+roi_size,y+roi_size)
+
+                # Reject ROI if it overlaps inset zone
+                if rectangles_overlap(roi_rect,inset_rect):
+                    continue
+
+                patch = arr[y:y+roi_size,x:x+roi_size]
+
+                score = compute_score(patch)
+
+                # basal tissue bias
+                score += (y/H)*3
+
+                if score > best_score:
+                    best_score = score
+                    best_pos = (x,y)
+
+        if best_pos is None:
+            return
+
+        x1,y1 = best_pos
+        x2 = x1 + roi_size
+        y2 = y1 + roi_size
+
+        roi = img.crop((x1,y1,x2,y2))
+
+        scale = inset_width/roi_size
+
+        zoom = roi.resize(
+            (int(roi_size*scale),int(roi_size*scale)),
+            Image.LANCZOS
+        )
+
+        base = img.copy()
+        draw = ImageDraw.Draw(base)
+
+        for x in range(x1,x2,ROI_DASH*2):
+            draw.line((x,y1,min(x+ROI_DASH,x2),y1),fill=(0,0,0),width=ROI_WIDTH)
+            draw.line((x,y2,min(x+ROI_DASH,x2),y2),fill=(0,0,0),width=ROI_WIDTH)
+
+        for y in range(y1,y2,ROI_DASH*2):
+            draw.line((x1,y,x1,min(y+ROI_DASH,y2)),fill=(0,0,0),width=ROI_WIDTH)
+            draw.line((x2,y,x2,min(y+ROI_DASH,y2)),fill=(0,0,0),width=ROI_WIDTH)
+
+        base.paste(zoom,(inset_x1,inset_y1))
+
+        draw2 = ImageDraw.Draw(base)
+        draw2.rectangle((inset_x1,inset_y1,inset_x2,inset_y2),outline=(0,0,0),width=3)
+
+        os.makedirs(os.path.dirname(out_path),exist_ok=True)
+        base.save(out_path,format="TIFF")
+
+    except Exception as e:
+        print("Skipped:",path,e)
+
+
+for root,dirs,files in os.walk(INPUT_ROOT):
+
+    for file in files:
+
+        if file.lower().endswith((".tif",".tiff")):
+
+            in_path = os.path.join(root,file)
+            rel = os.path.relpath(in_path,INPUT_ROOT)
+            out_path = os.path.join(OUTPUT_ROOT,rel)
+
+            print("Processing:",in_path)
+
+            process_image(in_path,out_path)
+
+print("All images processed.")
